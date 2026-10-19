@@ -24,4 +24,10 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     `CREATE INDEX IF NOT EXISTS memories_space ON ${SCHEMA}.memories (space_id)`,
     `CREATE INDEX IF NOT EXISTS memories_bot ON ${SCHEMA}.memories (bot_id)`,
   ],
+  [
+    `ALTER TABLE ${SCHEMA}.memories ADD COLUMN IF NOT EXISTS file_path text`,
+    `ALTER TABLE ${SCHEMA}.memories ADD COLUMN IF NOT EXISTS synced_hash text`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS memories_file_path
+      ON ${SCHEMA}.memories (file_path) WHERE file_path IS NOT NULL`,
+  ],
 ];

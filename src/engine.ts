@@ -1,5 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { hashContent, MAX_CONTENT_LENGTH } from "./content.js";
 import { MIGRATIONS, SCHEMA } from "./migrations.js";
+import { createMirror } from "./mirror.js";
 import type {
   ForgetRequest,
   Memory,
@@ -10,7 +12,6 @@ import type {
   SaveRequest,
 } from "./types.js";
 
-const MAX_CONTENT_LENGTH = 16_000;
 const MAX_QUERY_TERMS = 32;
 const MAX_LIMIT = 50;
 const TABLE = `${SCHEMA}.memories`;
@@ -102,7 +103,7 @@ export function createMemoryEngine(query: Query) {
     if (namespace.kind !== "org" && !request.spaceId) throw new Error("spaceId is required");
     const botId = namespace.kind === "bot" || namespace.kind === "history" ? namespace.id : null;
     await ensureSchema();
-    const hash = createHash("sha256").update(content).digest("hex");
+    const hash = hashContent(content);
     const { rows } = await query(
       `INSERT INTO ${TABLE}
          (id, kind, owner_id, generation, space_id, bot_id, content, content_hash, origin)
@@ -168,6 +169,7 @@ export function createMemoryEngine(query: Query) {
 
   return {
     ensureSchema,
+    syncFolder: createMirror(query, ensureSchema),
     save,
     recall,
     forget,

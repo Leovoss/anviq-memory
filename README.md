@@ -32,6 +32,13 @@ The engine creates and migrates its own `anviq_memory` schema on first use. Any 
 
 Deleting a bot, space or organization must also call `purgeBot`, `purgeSpace` or `purgeOrg`, because the tables have no foreign keys into the host database.
 
+## Markdown mirror
+
+`syncFolder({ dir, mode })` keeps a folder of Markdown notes in step with the database, one note
+per bot, space and organization memory. `export` writes notes from the database. `two-way` also
+imports edited and new notes and deletes memories whose notes were removed. Host applications call
+it on a timer.
+
 Search uses Postgres full-text search with the `simple` configuration, so it works for any language without stemming.
 
 ## Develop
