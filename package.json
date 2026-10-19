@@ -19,6 +19,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "prepare": "tsc -p tsconfig.build.json",
     "check": "tsc --noEmit -p tsconfig.json",
     "lint": "biome check .",
     "test": "vitest run"
