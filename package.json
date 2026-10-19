@@ -1,0 +1,33 @@
+{
+  "name": "@anviq/memory-engine",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": "^22.22.2 || ^24.0.0 || >=26.0.0"
+  },
+  "packageManager": "pnpm@9.15.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc --noEmit -p tsconfig.json",
+    "lint": "biome check .",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.13",
+    "@electric-sql/pglite": "0.3.14",
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2",
+    "vitest": "4.1.11"
+  }
+}
