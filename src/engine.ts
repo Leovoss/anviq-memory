@@ -78,6 +78,12 @@ export function createMemoryEngine(query: Query, options: { sealer?: MemorySeale
   let ready: Promise<void> | undefined;
 
   async function migrate(): Promise<void> {
+    // A schema the owner role already migrated needs no DDL, so a runtime login without CREATE works.
+    const present = await query(`SELECT to_regclass('${SCHEMA}.migrations')::text AS found`);
+    if (present.rows[0]?.found) {
+      const done = await query(`SELECT version FROM ${SCHEMA}.migrations`);
+      if (done.rows.length >= MIGRATIONS.length) return;
+    }
     await query(`CREATE SCHEMA IF NOT EXISTS ${SCHEMA}`);
     await query(
       `CREATE TABLE IF NOT EXISTS ${SCHEMA}.migrations (

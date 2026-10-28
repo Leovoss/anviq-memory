@@ -37,6 +37,19 @@ describe("schema", () => {
   });
 });
 
+describe("schema when already migrated", () => {
+  it("issues no DDL, so a runtime role without CREATE can use it", async () => {
+    await engine.ensureSchema();
+    const statements: string[] = [];
+    const runtime = createMemoryEngine((sql, params) => {
+      statements.push(sql);
+      return db.query(sql, params as unknown[]);
+    });
+    await runtime.save({ namespace: bot("b1"), spaceId: "s1", content: "A note" });
+    expect(statements.some((sql) => /^\s*(CREATE|ALTER)/i.test(sql))).toBe(false);
+  });
+});
+
 describe("recall", () => {
   it("only returns memories from the requested namespaces", async () => {
     await engine.save({ namespace: bot("b1"), spaceId: "s1", content: "Bot one likes espresso" });
