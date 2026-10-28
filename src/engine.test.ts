@@ -33,7 +33,7 @@ describe("schema", () => {
     await engine.ensureSchema();
     await createMemoryEngine((sql, params) => db.query(sql, params as unknown[])).ensureSchema();
     const { rows } = await db.query("SELECT count(*)::int AS n FROM anviq_memory.migrations");
-    expect(rows[0]).toEqual({ n: 2 });
+    expect(rows[0]).toEqual({ n: 3 });
   });
 });
 

@@ -41,6 +41,24 @@ it on a timer.
 
 Search uses Postgres full-text search with the `simple` configuration, so it works for any language without stemming.
 
+## Sealed memory
+
+Pass a `sealer` to keep memory encrypted at rest. The host owns the keys; the engine only stores what
+the sealer returns:
+
+```ts
+const memory = createMemoryEngine(query, { sealer });
+await memory.recall({ namespaces, spaceId, query: "invoices", limit: 8 });
+```
+
+A sealed row holds ciphertext in `content`, a keyed hash for deduplication and blind-index tokens for
+search. Recall matches on the tokens and ranks by how many query terms a memory hits, then opens only
+the rows it returns. Bot, space and history memory need the `spaceId` on recall, and org memory is keyed
+by the organization. Rows written before sealing stay readable, and `rewrite({ mode: "seal" })` seals
+them (`"unseal"` writes them back for a rollback). With `sealer.enabled` false, new memories are plaintext
+and sealed ones still open. The Markdown mirror reads and writes through the sealer, so its folder is
+plaintext by design.
+
 ## Develop
 
 ```
