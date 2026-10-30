@@ -3,7 +3,7 @@ import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/p
 import path from "node:path";
 import { hashContent, MAX_CONTENT_LENGTH } from "./content.js";
 import { SCHEMA } from "./migrations.js";
-import type { Query } from "./types.js";
+import type { MemorySealer, Query } from "./types.js";
 
 export type MirrorMode = "export" | "two-way";
 
@@ -35,6 +35,7 @@ interface Row extends Record<string, unknown> {
   space_id: string | null;
   content: string;
   content_hash: string;
+  sealed: boolean;
   updated_at: Date | string;
   file_path: string | null;
   synced_hash: string | null;
@@ -46,7 +47,6 @@ interface MirrorFile {
   ownerId: string;
   id?: string;
   body: string;
-  hash: string;
   mtime: number;
   extra: string[];
 }
@@ -67,8 +67,8 @@ function renderNote(id: string, content: string, extra: string[] = []): string {
   return `---\nid: ${id}\n${extra.map((line) => `${line}\n`).join("")}---\n\n${content}\n`;
 }
 
-function fileNameFor(row: Row): string {
-  const firstLine = row.content.split(/\r?\n/).find((line) => line.trim() !== "") ?? "";
+function fileNameFor(row: Row, text: string): string {
+  const firstLine = text.split(/\r?\n/).find((line) => line.trim() !== "") ?? "";
   const slug = firstLine
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, "-")
@@ -111,7 +111,6 @@ async function scan(root: string): Promise<MirrorFile[]> {
       ownerId,
       id: note.id,
       body: note.body,
-      hash: hashContent(note.body),
       mtime: (await stat(full)).mtimeMs,
       extra: note.extra,
     });
@@ -119,7 +118,52 @@ async function scan(root: string): Promise<MirrorFile[]> {
   return files;
 }
 
-export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
+interface Stored {
+  content: string;
+  hash: string;
+  sealed: boolean;
+  tokens: number[] | null;
+}
+
+export function createMirror(
+  query: Query,
+  ensureSchema: () => Promise<void>,
+  sealer?: MemorySealer,
+) {
+  const scopeOf = (kind: Kind, ownerId: string, spaceId: string | null) =>
+    kind === "org" ? ownerId : spaceId;
+
+  async function plainOf(row: Row): Promise<string> {
+    if (!row.sealed) return row.content;
+    const scope = scopeOf(row.kind, row.owner_id, row.space_id);
+    if (!sealer || !scope) throw new Error("This memory is sealed and cannot be opened here");
+    return sealer.open({ id: row.id, kind: row.kind, scope, owner: row.owner_id }, row.content);
+  }
+
+  /** The hash a row of this kind keeps for a body, so a file is compared the way the row is. */
+  async function hashFor(row: Row, body: string): Promise<string> {
+    if (!row.sealed) return hashContent(body);
+    const scope = scopeOf(row.kind, row.owner_id, row.space_id);
+    if (!sealer || !scope) throw new Error("This memory is sealed and cannot be opened here");
+    return sealer.hash(scope, body);
+  }
+
+  async function storedFor(
+    ref: { id: string; kind: Kind; ownerId: string; spaceId: string | null },
+    body: string,
+  ): Promise<Stored> {
+    const scope = scopeOf(ref.kind, ref.ownerId, ref.spaceId);
+    if (sealer?.enabled && scope) {
+      const [content, hash, tokens] = await Promise.all([
+        sealer.seal({ id: ref.id, kind: ref.kind, scope, owner: ref.ownerId }, body),
+        sealer.hash(scope, body),
+        sealer.tokens(scope, body),
+      ]);
+      return { content, hash, sealed: true, tokens };
+    }
+    return { content: body, hash: hashContent(body), sealed: false, tokens: null };
+  }
+
   async function setSyncState(id: string, filePath: string, hash: string): Promise<void> {
     await query(`UPDATE ${TABLE} SET file_path = $2, synced_hash = $3 WHERE id = $1`, [
       id,
@@ -148,7 +192,8 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
     const absolute = (rel: string) => path.join(options.dir, ...rel.split("/"));
 
     const { rows } = (await query(
-      `SELECT id, kind, owner_id, space_id, content, content_hash, updated_at, file_path, synced_hash
+      `SELECT id, kind, owner_id, space_id, content, content_hash, sealed, updated_at, file_path,
+              synced_hash
        FROM ${TABLE} WHERE kind <> 'history'`,
     )) as { rows: Row[] };
     const files = await scan(options.dir);
@@ -172,14 +217,15 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
         continue;
       }
       matched.add(row.id);
-      if (file.hash === row.content_hash) {
-        if (row.synced_hash !== file.hash || row.file_path !== file.rel) {
-          await setSyncState(row.id, file.rel, file.hash);
+      const fileHash = await hashFor(row, file.body);
+      if (fileHash === row.content_hash) {
+        if (row.synced_hash !== fileHash || row.file_path !== file.rel) {
+          await setSyncState(row.id, file.rel, fileHash);
         }
         continue;
       }
       const rowChanged = row.synced_hash !== row.content_hash;
-      const fileChanged = file.hash !== row.synced_hash;
+      const fileChanged = fileHash !== row.synced_hash;
       const fileWins =
         twoWay && fileChanged && (!rowChanged || file.mtime > new Date(row.updated_at).getTime());
       if (fileWins) {
@@ -188,12 +234,16 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
           continue;
         }
         try {
+          const next = await storedFor(
+            { id: row.id, kind: row.kind, ownerId: row.owner_id, spaceId: row.space_id },
+            file.body,
+          );
           await query(
             `UPDATE ${TABLE}
              SET content = $2, content_hash = $3, synced_hash = $3, file_path = $4,
-                 origin = 'file', updated_at = now()
+                 origin = 'file', updated_at = now(), sealed = $5, search_tokens = $6::integer[]
              WHERE id = $1`,
-            [row.id, file.body, file.hash, file.rel],
+            [row.id, next.content, next.hash, file.rel, next.sealed, next.tokens],
           );
         } catch {
           result.skipped += 1;
@@ -203,7 +253,7 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
           await writeAtomic(absolute(file.rel), renderNote(row.id, file.body, file.extra));
         result.imported += 1;
       } else {
-        await writeAtomic(absolute(file.rel), renderNote(row.id, row.content, file.extra));
+        await writeAtomic(absolute(file.rel), renderNote(row.id, await plainOf(row), file.extra));
         await setSyncState(row.id, file.rel, row.content_hash);
         result.exported += 1;
       }
@@ -228,8 +278,9 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
         }
         continue;
       }
-      const rel = row.file_path ?? `${row.kind}/${row.owner_id}/${fileNameFor(row)}`;
-      await writeAtomic(absolute(rel), renderNote(row.id, row.content));
+      const text = await plainOf(row);
+      const rel = row.file_path ?? `${row.kind}/${row.owner_id}/${fileNameFor(row, text)}`;
+      await writeAtomic(absolute(rel), renderNote(row.id, text));
       await setSyncState(row.id, rel, row.content_hash);
       result.exported += 1;
     }
@@ -251,10 +302,15 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
       return;
     }
     const id = randomUUID();
+    const next = await storedFor(
+      { id, kind: file.kind, ownerId: file.ownerId, spaceId },
+      file.body,
+    );
     const { rows } = await query(
       `INSERT INTO ${TABLE}
-         (id, kind, owner_id, space_id, bot_id, content, content_hash, synced_hash, file_path, origin)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, 'file')
+         (id, kind, owner_id, space_id, bot_id, content, content_hash, synced_hash, file_path, origin,
+          sealed, search_tokens)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8, 'file', $9, $10::integer[])
        ON CONFLICT DO NOTHING
        RETURNING id`,
       [
@@ -263,9 +319,11 @@ export function createMirror(query: Query, ensureSchema: () => Promise<void>) {
         file.ownerId,
         spaceId,
         file.kind === "bot" ? file.ownerId : null,
-        file.body,
-        file.hash,
+        next.content,
+        next.hash,
         file.rel,
+        next.sealed,
+        next.tokens,
       ],
     );
     if (rows.length === 0) {

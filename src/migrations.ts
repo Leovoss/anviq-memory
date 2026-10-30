@@ -30,4 +30,10 @@ export const MIGRATIONS: readonly (readonly string[])[] = [
     `CREATE UNIQUE INDEX IF NOT EXISTS memories_file_path
       ON ${SCHEMA}.memories (file_path) WHERE file_path IS NOT NULL`,
   ],
+  [
+    // Additive: a release that does not know these columns keeps reading and writing plaintext rows.
+    `ALTER TABLE ${SCHEMA}.memories ADD COLUMN IF NOT EXISTS sealed boolean NOT NULL DEFAULT false`,
+    `ALTER TABLE ${SCHEMA}.memories ADD COLUMN IF NOT EXISTS search_tokens integer[]`,
+    `CREATE INDEX IF NOT EXISTS memories_tokens ON ${SCHEMA}.memories USING gin (search_tokens)`,
+  ],
 ];
